@@ -1,27 +1,31 @@
 #! /usr/bin/env python3
 import argparse
-import os
+import concurrent
 import csv
-from pathlib import Path
+import json
+import os
 import sys
 import tarfile
 import tempfile
-import json
 import zipfile
-
-import concurrent
+from pathlib import Path
 
 from tqdm import tqdm
 
+ROOT = os.path.dirname(os.path.abspath(__file__))   # Directory of the current script
+sys.path.insert(0, ROOT)  # ROOT must include the top-level package (e.g., amalfi)
+from code.training.feature_extractor import (_guess_unpacked_root,
+                                             _is_within_directory,
+                                             _read_pkg_meta,
+                                             _safe_extractall_tar,
+                                             _safe_extractall_zip,
+                                             _zip_is_encrypted)
 
-ROOT = os.path.dirname(os.path.abspath(__file__))   # 当前脚本所在目录
-sys.path.insert(0, ROOT)  # ROOT 必须包含顶层包（如 amalfi）
-from code.training.feature_extractor import _guess_unpacked_root, _is_within_directory, _read_pkg_meta, _safe_extractall_tar, _safe_extractall_zip, _zip_is_encrypted
 
 def process_package_archive(archive_path: str):
     """
-    解包 + 特征提取，返回行 dict（给 scan_tarballs_to_csv 写入统一大 CSV）
-    失败返回 None
+    Unpack + feature extraction, return a row dict (for scan_tarballs_to_csv to write to a unified large CSV).
+    Return None on failure.
     """
     tarball_name = os.path.basename(archive_path)
 
@@ -78,14 +82,14 @@ def process_package_archive(archive_path: str):
 
 def extract_name_version_from_archive(archive_path: str):
     """
-    从 .tgz/.tar(.gz)/.zip 归档中解包并读取 package.json，返回 (name, version)
-    - .zip 支持密码 'infected'；若为 AES 加密则尝试 pyzipper
-    - 使用与 process_package_archive 相同的安全解包策略
+    Unpack and read package.json from .tgz/.tar(.gz)/.zip archives, return (name, version).
+    - .zip supports password 'infected'; if AES-encrypted, try pyzipper.
+    - Use the same secure unpacking strategy as process_package_archive.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         lower = archive_path.lower()
 
-        # 1) 解包（与上面的 process_package_archive 保持一致的分支与回退策略）
+        # 1) Unpack (maintain consistent branching and fallback strategy with process_package_archive above)
         try:
             if lower.endswith((".tgz", ".tar.gz", ".tar")):
                 with tarfile.open(archive_path, "r:*") as tar:
@@ -95,11 +99,11 @@ def extract_name_version_from_archive(archive_path: str):
                 try:
                     with zipfile.ZipFile(archive_path, "r") as zf:
                         if _zip_is_encrypted(zf):
-                            # 先试传统 ZipCrypto
+                            # Try traditional ZipCrypto first
                             try:
                                 _safe_extractall_zip(zf, tmpdir, password=b"infected")
                             except RuntimeError as re:
-                                # 可能是 AES，回退到 pyzipper
+                                # Might be AES, fallback to pyzipper
                                 try:
                                     import pyzipper  # pip install pyzipper
                                     with pyzipper.AESZipFile(archive_path) as pzf:
@@ -127,19 +131,19 @@ def extract_name_version_from_archive(archive_path: str):
             print(f"[WARN] Failed to unpack {os.path.basename(archive_path)}: {e}")
             return None, None
 
-        # 2) 定位包根目录（与上面的流程一致）
+        # 2) Locate package root directory (same as the above process)
         try:
             pkg_root = _guess_unpacked_root(tmpdir)
         except Exception:
-            # 回退策略：npm 常见顶层 package/ 目录
+            # Fallback strategy: common npm top-level package/ directory
             entries = [e for e in os.listdir(tmpdir) if not e.startswith(".")]
             if len(entries) == 1 and os.path.isdir(os.path.join(tmpdir, entries[0])):
                 pkg_root = os.path.join(tmpdir, entries[0])
             else:
                 pkg_root = tmpdir
 
-        # 3) 读取 package.json
-        # 常见路径：pkg_root/package.json；若不存在，做一次浅层遍历兜底
+        # 3) Read package.json
+        # Common path: pkg_root/package.json; if not exists, do a shallow traversal as fallback
         candidates = [os.path.join(pkg_root, "package.json")]
         if not os.path.exists(candidates[0]):
             for root, _, files in os.walk(pkg_root):
@@ -161,14 +165,13 @@ def extract_name_version_from_archive(archive_path: str):
 
 def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = None):
     """
-    递归扫描目录下所有 .tgz/.tar.gz/.tar/.zip，并行处理，结果实时写入 CSV。
+    Recursively scan all .tgz/.tar.gz/.tar/.zip in the directory, process in parallel, and write results to CSV in real-time.
     """
 
     header = ["package_name","package_version"]
 
     write_header = not os.path.exists(out_csv)
 
-    # 收集归档路径
     archive_paths = []
     for root, _, files in os.walk(tarballs_dir):
         for fn in files:
@@ -178,7 +181,6 @@ def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = Non
 
     print(f"Found {len(archive_paths)} archives under {tarballs_dir}")
 
-    # 并行处理并实时写入
     with open(out_csv, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=header)
 
@@ -192,12 +194,11 @@ def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = Non
                     if not row:
                         continue
 
-                    # 补齐缺失字段
                     for col in header:
                         if col not in row:
-                            row[col] = 0 if col in feature_cols else ""
+                            row[col] = ""
 
-                    writer.writerow(row)   # 实时写入
+                    writer.writerow(row)   # Write in real-time
                 except Exception as e:
                     print(f"\n[ERROR] {path}: {e}")
 

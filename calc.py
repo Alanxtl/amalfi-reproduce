@@ -1,12 +1,14 @@
 import csv
+
 import pandas as pd
-from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, confusion_matrix
+from sklearn.metrics import classification_report
+
 
 def load_malicious_set(malicious_path: str, hashing: bool = False) -> set:
     """
-    读取无表头的恶意清单 CSV：
-    - hashing=False: 每行 'package,version'
-    - hashing=True : 每行 'hash'
+    Read a headerless malicious list CSV:
+    - hashing=False: Each row contains 'package,version'
+    - hashing=True : Each row contains 'hash'
     """
     malicious = set()
     with open(malicious_path, "r", encoding="utf-8") as f:
@@ -36,8 +38,8 @@ def calculate_metrics(
     negative_label: str = "benign",
 ):
     """
-    用 (package,version) 或 hash 从 malicious_path 构造真值，与 file_path 中的预测列对齐并计算指标。
-    file_path 需包含：
+    Use (package,version) or hash to construct ground truth from malicious_path, align with the prediction column in file_path, and calculate metrics.
+    file_path should include:
       - hashing=False: [package_name, package_version, prediction]
       - hashing=True : [hash, prediction]
     """

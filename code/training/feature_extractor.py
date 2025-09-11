@@ -1,36 +1,26 @@
 import argparse
+import concurrent.futures
+import csv
+import json
 import os
 import re
-import json
-from tqdm import tqdm  # pip install tqdm
 import tarfile
-import concurrent.futures
-import concurrent.futures
-from tqdm import tqdm
-import csv
-import os
 import tempfile
-import shutil
-import csv
-from pathlib import Path
-from scipy.stats import entropy
-import numpy as np
-import os
-import tarfile
 import zipfile
-import tempfile
-import json
 from pathlib import Path
 
-from tree_sitter import Language, Parser
+import numpy as np
 import tree_sitter_javascript as jsts
 import tree_sitter_typescript as tsts
+from scipy.stats import entropy
+from tqdm import tqdm  # pip install tqdm
+from tree_sitter import Language, Parser
 
-# --- Language 初始化 ---
+# --- Language Initialization ---
 JS_LANGUAGE = Language(jsts.language()) 
 TS_LANGUAGE = Language(tsts.language_typescript())
 
-# --- 特征查询 ---
+# --- Feature Queries ---
 ALL_QUERIES = {
     "fs_access": {
         "javascript": r"""
@@ -437,7 +427,6 @@ ALL_QUERIES = {
 }
 
 
-# --- PII 正则 ---
 PII_KEYWORDS = re.compile(
     r"""(?ix)
     \b(pass(word|wd)?|passwd|pwd|secret|seckey|apikey|api[_-]?key|token|access[_-]?token|bearer|
@@ -446,7 +435,6 @@ PII_KEYWORDS = re.compile(
 )
 
 
-# --- 工具函数 ---
 def calculate_shannon_entropy(data):
     if not data:
         return 0
@@ -463,11 +451,8 @@ class FeatureExtractor:
         self.ts_parser = Parser(TS_LANGUAGE)
 
     def _query_ast(self, language, tree, source_bytes, query_str):
-        """
-        使用旧版 tree-sitter API 执行 query 并返回匹配
-        """
         query = language.query(query_str)
-        captures = query.captures(tree.root_node)  # 返回 (capture_name, Node) 列表
+        captures = query.captures(tree.root_node) 
 
         results = []
         for capture_name, nodes in captures.items():
@@ -499,7 +484,6 @@ class FeatureExtractor:
             tree = parser.parse(bytes(content, "utf8"))
             source_bytes = bytes(content, "utf8")
 
-            # 遍历所有 query
             for feature_name, query_str in queries.items():
                 if not query_str:
                     continue
@@ -528,7 +512,6 @@ class FeatureExtractor:
             except:
                 pass
 
-        # 遍历文件
         for root, _, files in os.walk(package_path):
             for file in files:
                 file_path = os.path.join(root, file)
@@ -558,9 +541,9 @@ class FeatureExtractor:
 
 def _guess_unpacked_root(tmp_dir: str) -> str:
     """
-    尝试推断解包后的根目录：
-    - 若仅有一个顶级目录（npm pack 常见的 'package/'），进入该目录
-    - 否则就用 tmp_dir 本身
+    Try to infer the root directory after unpacking:
+    - If there's only one top-level directory (common 'package/' from npm pack), enter that directory
+    - Otherwise use tmp_dir itself
     """
     entries = [e for e in os.listdir(tmp_dir) if not e.startswith('.')]
     if len(entries) == 1:
@@ -571,7 +554,7 @@ def _guess_unpacked_root(tmp_dir: str) -> str:
 
 
 def _read_pkg_meta(unpacked_path: str):
-    """读取 package.json 的 name/version（不存在或异常时返回 None）"""
+    """Read name/version from package.json (returns None if not exists or on error)"""
     pkg_json = os.path.join(unpacked_path, 'package.json')
     name = version = None
     if os.path.exists(pkg_json):
@@ -608,13 +591,13 @@ def _safe_extractall_zip(zf: zipfile.ZipFile, path: str):
             raise Exception(f"Blocked path traversal in zip: {member}")
     zf.extractall(path)
 
-# ---------- 根目录推断（更健壮） ----------
+# ---------- Root Directory Inference (More Robust) ----------
 
 def _has_pkg_json(p: str) -> bool:
     return os.path.isfile(os.path.join(p, "package.json"))
 
 def _list_top_level_entries(root: str):
-    # 过滤隐藏项与常见无关项（可按需增删）
+    # Filter hidden and common irrelevant entries (can be modified as needed)
     ignore_names = set()
     entries = []
     for name in os.listdir(root):
@@ -627,13 +610,13 @@ def _list_top_level_entries(root: str):
 
 def _guess_unpacked_root(tmp_dir: str) -> str:
     """
-    更健壮的根目录推断逻辑：
-      1) 若 tmp_dir 本身有 package.json → 直接用 tmp_dir
-      2) 若仅有一个顶级目录 → 进入该目录（npm 常见的 package/）
-      3) 若多个顶级目录：
-         - 若恰好有一个目录含有 package.json → 选它
-         - 若存在名为 'package' 的目录 → 选它
-         - 否则仍返回 tmp_dir（在遍历时会扫描所有文件）
+    More robust root directory inference logic:
+      1) If tmp_dir itself has package.json → use tmp_dir directly
+      2) If only one top-level directory → enter that directory (common npm 'package/')
+      3) If multiple top-level directories:
+         - If exactly one directory contains package.json → choose it
+         - If a directory named 'package' exists → choose it
+         - Otherwise return tmp_dir (will scan all files during traversal)
     """
     if _has_pkg_json(tmp_dir):
         return tmp_dir
@@ -641,23 +624,23 @@ def _guess_unpacked_root(tmp_dir: str) -> str:
     entries = _list_top_level_entries(tmp_dir)
     dirs = [e for e in entries if os.path.isdir(e)]
 
-    # 单一顶级目录
+    # Single top-level directory
     if len(dirs) == 1:
         only = dirs[0]
         return only if os.path.isdir(only) else tmp_dir
 
-    # 多个目录：优先找含 package.json 的唯一目录
+    # Multiple directories: prioritize directory with package.json
     candidates = [d for d in dirs if _has_pkg_json(d)]
     if len(candidates) == 1:
         return candidates[0]
 
-    # 常见的 npm 根目录名
+    # Common npm root directory names
     for prefer in ("package",):
         candidate = os.path.join(tmp_dir, prefer)
         if os.path.isdir(candidate):
             return candidate
 
-    # 回退：用 tmp_dir
+    # Fallback: use tmp_dir
     return tmp_dir
 
 
@@ -666,19 +649,19 @@ def _zip_is_encrypted(zf: zipfile.ZipFile) -> bool:
     return any((zi.flag_bits & 0x1) != 0 for zi in zf.infolist())
 
 def _safe_extractall_zip(zf: zipfile.ZipFile, path: str, password: bytes | None = None):
-    # 路径穿越保护
+    # Path traversal protection
     for member in zf.namelist():
         target = os.path.join(path, member)
         if not _is_within_directory(path, target):
             raise Exception(f"Blocked path traversal in zip: {member}")
-    # 解压（未加密也可传 pwd，会被忽略）
+    # Extract (pwd can be passed even for unencrypted files, will be ignored)
     zf.extractall(path=path, pwd=password)
 
-# ---------- 统一处理 .tgz/.tar/.zip 的入口 ----------
+# ---------- Unified Entry Point for .tgz/.tar/.zip Processing ----------
 def process_package_archive(archive_path: str):
     """
-    解包 + 特征提取，返回行 dict（给 scan_tarballs_to_csv 写入统一大 CSV）
-    失败返回 None
+    Unpack + feature extraction, return row dict (for scan_tarballs_to_csv to write to unified large CSV)
+    Returns None on failure
     """
     tarball_name = os.path.basename(archive_path)
 
@@ -742,9 +725,6 @@ def process_package_archive(archive_path: str):
         return row
 
 def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = None):
-    """
-    递归扫描目录下所有 .tgz/.tar.gz/.tar/.zip，并行处理，结果实时写入 CSV。
-    """
     feature_cols = [
         "pii_access","fs_access","process_creation","network_access",
         "crypto_api","data_encoding","dynamic_code",
@@ -755,7 +735,7 @@ def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = Non
 
     write_header = not os.path.exists(out_csv)
 
-    # 收集归档路径
+    # Collect archive paths
     archive_paths = []
     for root, _, files in os.walk(tarballs_dir):
         for fn in files:
@@ -765,7 +745,7 @@ def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = Non
 
     print(f"Found {len(archive_paths)} archives under {tarballs_dir}")
 
-    # 并行处理并实时写入
+    # Parallel processing and real-time writing
     with open(out_csv, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=header)
         if write_header:
@@ -781,12 +761,11 @@ def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = Non
                     if not row:
                         continue
 
-                    # 补齐缺失字段
                     for col in header:
                         if col not in row:
                             row[col] = 0 if col in feature_cols else ""
 
-                    writer.writerow(row)   # 实时写入
+                    writer.writerow(row) 
                 except Exception as e:
                     print(f"\n[ERROR] {path}: {e}")
 

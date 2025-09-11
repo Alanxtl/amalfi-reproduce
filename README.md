@@ -1,39 +1,47 @@
-# Reproduce procedure
+# Reproduction Procedure
 
-install prerequiste
+## 1. Install Prerequisites
 
 ```bash
 pip install -r requirements.txt
 ```
 
-generate malicious true value
-```
+## 2. Generate True Labels for malicious samples
+
+```bash
 python generate_malicious_csv.py ./mal_dataset/dir -o ./features/malicious.csv
 ```
 
-generate featrue vector (csv)
-```
-python .\code\training\feature_extractor.py --dataset ./dataset/dir --out ./features/train.csv
+## 3. Extract Feature Vectors
+
+```bash
+python ./code/training/feature_extractor.py --dataset ./dataset/dir --out ./features/train.csv
 ```
 
-train model
-```
-python .\code\training\train_classifier.py random-forest ./features/malicious.csv ./features/train.csv -o model.pkl
+## 4. Train the Model
+
+```bash
+python ./code/training/train_classifier.py random-forest ./features/malicious.csv ./features/train.csv -o model.pkl
 ```
 
-predict (only use model to predict, not contain clone-detector or reproducer)
-```
-python predict.py model.pkl .\features\test.csv -o predictions.csv
+## 5. Make Predictions
+
+> Only uses the trained model for prediction (does not include clone-detector or reproducer).
+
+```bash
+python predict.py model.pkl ./features/test.csv -o predictions.csv
 ```
 
-generate malicious true value
-```
-python generate_malicious_csv.py .\test_mal_dataset\dir -o .\features\test_true_value.csv
+## 6. Generate True Labels for Test Set
+
+```bash
+python generate_malicious_csv.py ./test_mal_dataset/dir -o ./features/test_true_value.csv
 ```
 
-calc metric of predict output
-```
-python .\calc.py
+## 7. Evaluate Prediction Metrics
+
+```bash
+python ./calc.py predictions.csv -m ./features/test_true_value.csv
 ```
 
 

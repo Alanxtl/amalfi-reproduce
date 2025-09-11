@@ -6,7 +6,7 @@ import pickle
 
 
 def predict_from_bigcsv(model_path, features_csv, output_csv):
-    # 载入模型
+    # Load the model
     with open(model_path, "rb") as f:
         model_data = pickle.load(f)
 
@@ -21,7 +21,7 @@ def predict_from_bigcsv(model_path, features_csv, output_csv):
         reader = csv.DictReader(f)
 
         for row in reader:
-            # 构建特征向量
+            # Construct the feature vector
             feature_vec = [0] * len(feature_names)
 
             for feat in feature_names:
@@ -38,10 +38,10 @@ def predict_from_bigcsv(model_path, features_csv, output_csv):
                 idx = feature_names.index(feat)
                 feature_vec[idx] = val
 
-            # 调用分类器预测
+            # Call classifier for prediction
             if hasattr(clf, "predict"):
                 pred = clf.predict([feature_vec])[0]
-                if pred == -1:  # one-class SVM 的异常检测输出
+                if pred == -1:  # Anomaly detection output from one-class SVM
                     pred = "malicious"
                 elif pred == 1 or pred == "benign":
                     pred = "benign"
@@ -57,7 +57,7 @@ def predict_from_bigcsv(model_path, features_csv, output_csv):
                 "prediction": pred
             })
 
-    # 写出预测结果
+    # Write prediction results
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["tarball", "package_name", "package_version", "prediction"])
         writer.writeheader()

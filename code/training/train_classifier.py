@@ -5,18 +5,17 @@ import csv
 import os
 import pickle
 import random
-
 from datetime import timedelta
-from graphviz import Source
-from sklearn import tree, naive_bayes, svm
-from sklearn.ensemble import RandomForestClassifier
 from timeit import default_timer as timer
+
+from graphviz import Source
+from sklearn import naive_bayes, svm, tree
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (accuracy_score, classification_report,
+                             confusion_matrix)
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
-from util import parse_date  # 你原来有 util.py 的 parse_date / version_date
+from util import parse_date  
 
-
-# 特征里连续值（不要在 booleanize 时处理掉）
 CONTINUOUS_FEATURES = ["entropy_average", "entropy_std_dev", "time"]
 
 
@@ -52,14 +51,12 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
     if randomize:
         malicious_len = 0
 
-    # === 直接读取大 CSV ===
     with open(features_csv, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             package = row["package_name"]
             version = row["package_version"]
 
-            # 构建 feature_dict
             feature_dict = {}
             for k, v in row.items():
                 if k in ["tarball", "package_name", "package_version"]:
@@ -75,12 +72,10 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
                 if k not in exclude_features:
                     feature_dict[k] = value
 
-            # 注册特征名
             for feat in feature_dict.keys():
                 if feat not in feature_names:
                     feature_names.append(feat)
 
-            # 转换成向量
             feature_vec = [0] * len(feature_names)
             for feat, val in feature_dict.items():
                 idx = feature_names.index(feat)
@@ -90,7 +85,7 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
 
             label = "benign"
             if hashing:
-                # TODO: 如果你有 hash.csv，可以在这里对比 hash 值
+                # TODO:
                 pass
             else:
                 if (package, version) in malicious:
@@ -100,23 +95,19 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
             if label == "malicious" and randomize:
                 malicious_len += 1
 
-    # 对齐向量长度
     num_features = len(feature_names)
     for vec in training_set:
         if len(vec) < num_features:
             vec.extend([0] * (num_features - len(vec)))
 
-    # 平衡样本
     if randomize:
         benign_indices = [i for i, lab in enumerate(labels) if lab == "benign"]
         benign_selected = random.sample(benign_indices, malicious_len)
         training_set = [s for i, s in enumerate(training_set) if i in benign_selected or labels[i] == "malicious"]
         labels = [lab for i, lab in enumerate(labels) if i in benign_selected or lab == "malicious"]
 
-    # 做 train/test split
     X_train, X_test, y_train, y_test = train_test_split(training_set, labels, test_size=0.2, random_state=42, stratify=labels)
 
-    # === 训练 ===
     start = timer()
     if classifier == "decision-tree":
         clf = tree.DecisionTreeClassifier(criterion="entropy")
@@ -145,7 +136,6 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
             outfile = Source(tree.export_graphviz(clf, out_file=None, feature_names=feature_names), format="png")
             outfile.render(file, view=view, cleanup=True)
 
-    # 使用 X_test 测试并输出指标
     y_pred = clf.predict(X_test)
     if classifier != "svm":
         print("Confusion Matrix:")
@@ -154,15 +144,11 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
         print(classification_report(y_test, y_pred))
         print("Accuracy:", accuracy_score(y_test, y_pred))
     else:
-        # SVM 是 one-class，只能检测异常
-        # SVM 的预测结果是 1 (benign) 或 -1 (malicious)
-        # 这里将 1 映射为 "benign"，-1 映射为 "malicious"
         mapped_pred = ["malicious" if v == -1 else "benign" for v in y_pred]
         print(classification_report(y_test, mapped_pred))
         print("Accuracy:", accuracy_score(y_test, mapped_pred))
         print("SVM prediction counts:", {label: mapped_pred.count(label) for label in set(mapped_pred)})
 
-    # 存模型
     with open(output, "wb") as f:
         pickle.dump({
             "feature_names": feature_names,
