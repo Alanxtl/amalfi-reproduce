@@ -1,3 +1,43 @@
+# Reproduce procedure
+
+install prerequiste
+
+```bash
+pip install -r requirements.txt
+```
+
+generate malicious true value
+```
+python generate_malicious_csv.py ./mal_dataset/dir -o ./features/malicious.csv
+```
+
+generate featrue vector (csv)
+```
+python .\code\training\feature_extractor.py --dataset ./dataset/dir --out ./features/train.csv
+```
+
+train model
+```
+python .\code\training\train_classifier.py random-forest ./features/malicious.csv ./features/train.csv -o model.pkl
+```
+
+predict (only use model to predict, not contain clone-detector or reproducer)
+```
+python predict.py model.pkl .\features\test.csv -o predictions.csv
+```
+
+generate malicious true value
+```
+python generate_malicious_csv.py .\test_mal_dataset\dir -o .\features\test_true_value.csv
+```
+
+calc metric of predict output
+```
+python .\calc.py
+```
+
+
+
 # Artifact: Practical Automated Detection of Malicious npm Packages
 
 This is the artifact for our ICSE '22 paper "Practical Automated Detection of Malicious npm Packages", which presents an approach to automatically detecting malicious npm packages based on a combination of three components: machine-learning classifiers trained on known samples of malicious and benign npm packages; a reproducer for identifying packages that can be rebuilt from source and hence are unlikely to be malicious; and a clone detector for finding copies of known malicious packages.

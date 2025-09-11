@@ -8,225 +8,195 @@ import random
 
 from datetime import timedelta
 from graphviz import Source
-from sklearn import tree
-from sklearn import naive_bayes
-from sklearn import svm
+from sklearn import tree, naive_bayes, svm
 from sklearn.ensemble import RandomForestClassifier
 from timeit import default_timer as timer
-from util import parse_date, version_date
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from util import parse_date  # 你原来有 util.py 的 parse_date / version_date
 
-# features with continuous values
-CONTINUOUS_FEATURES = ["entropy average", "entropy standard deviation", "time"]
+
+# 特征里连续值（不要在 booleanize 时处理掉）
+CONTINUOUS_FEATURES = ["entropy_average", "entropy_std_dev", "time"]
 
 
-def train_classifier(classifier, malicious_path, training_sets, output, booleanize=False, hashing=False, exclude_features=None,
-                     nu=0.001, positive=False, render=False, randomize=False, view=False, leave_out=None, until=None, performance=None):
+def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, output,
+                                 booleanize=False, hashing=False, exclude_features=None,
+                                 nu=0.001, positive=False, render=False,
+                                 randomize=False, view=False, until=None, performance=None):
 
-    if exclude_features == None:
+    if exclude_features is None:
         exclude_features = []
 
-    if leave_out == None:
-        leave_out = []
-
-    # Naive Bayes implicitly booleanizes the feature vectors
     if classifier == "naive-bayes":
         booleanize = True
 
-    # exclude continuous features when booleanizing
     if booleanize:
         exclude_features.extend(CONTINUOUS_FEATURES)
 
-    # names of features
     feature_names = []
-    # an array of arrays, each of which is a feature vector
     training_set = []
-    # label each row of the feature matrix as either "benign" or "malicious"
     labels = []
 
-    # load known malicious (package,version) pairs or their hashes
+    # 读取恶意标注 (package, version)
     malicious = set()
     with open(malicious_path, "r") as mal:
-        reynolds = csv.reader(mal)
-        for row in reynolds:
+        reader = csv.reader(mal)
+        for row in reader:
             if hashing:
-                hash_res = row[0]
-                malicious.add(hash_res)
+                malicious.add(row[0])
             else:
                 package, version = row
                 malicious.add((package, version))
 
-    # if randomize is on, we track the size of the malicious class length
     if randomize:
         malicious_len = 0
 
-    versions = {}
+    # === 直接读取大 CSV ===
+    with open(features_csv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            package = row["package_name"]
+            version = row["package_version"]
 
-    # find all `change-features.csv` files in all training_set directories
-    for training_set_dir in training_sets:
-        for root, _, files in os.walk(training_set_dir):
-            for f in files:
-                if f == "change-features.csv" and f"{root}" not in leave_out:
-                    package = os.path.relpath(
-                        os.path.dirname(root), training_set_dir)
-                    version = os.path.basename(root)
-                    date = version_date(versions, root)
-                    print(f"{package}@{version}: {date}")
-                    if until is not None and date >= until:
-                        print(
-                            f"Skipping {package}@{version}. Date {date} is outside the boundaries.")
-                        continue
+            # 构建 feature_dict
+            feature_dict = {}
+            for k, v in row.items():
+                if k in ["tarball", "package_name", "package_version"]:
+                    continue
+                try:
+                    value = float(v)
+                except:
+                    value = 0.0
+                if positive and value < 0:
+                    value = 0
+                if booleanize and k not in exclude_features:
+                    value = 1 if value > 0 else 0
+                if k not in exclude_features:
+                    feature_dict[k] = value
 
-                    print(f"Processing {package}@{version}")
-                    # load features for this package
-                    with open(os.path.join(root, f), "r") as feature_file:
-                        # first, read features into a dictionary
-                        feature_dict = {}
-                        for row in csv.reader(feature_file):
-                            feature, value = row
-                            value = float(value)
+            # 注册特征名
+            for feat in feature_dict.keys():
+                if feat not in feature_names:
+                    feature_names.append(feat)
 
-                            if positive and value < 0:
-                                value = 0
-                            if booleanize:
-                                value = 1 if value > 0 else 0
-                            if feature not in exclude_features:
-                                feature_dict[feature] = value
+            # 转换成向量
+            feature_vec = [0] * len(feature_names)
+            for feat, val in feature_dict.items():
+                idx = feature_names.index(feat)
+                feature_vec[idx] = val
 
-                        # assign indices to any features we have not seen before
-                        for feature in feature_dict.keys():
-                            if feature not in feature_names:
-                                feature_names.append(feature)
+            training_set.append(feature_vec)
 
-                        # convert the feature dictionary into a feature vector
-                        feature_vec = []
-                        for feature, value in feature_dict.items():
-                            idx = feature_names.index(feature)
-                            if idx >= len(feature_vec):
-                                feature_vec.extend(
-                                    [0] * (idx - len(feature_vec) + 1))
-                            feature_vec[idx] = value
+            label = "benign"
+            if hashing:
+                # TODO: 如果你有 hash.csv，可以在这里对比 hash 值
+                pass
+            else:
+                if (package, version) in malicious:
+                    label = "malicious"
 
-                        # add the feature vector to the training set
-                        training_set.append(feature_vec)
+            labels.append(label)
+            if label == "malicious" and randomize:
+                malicious_len += 1
 
-                        # add the label to the labels list
-                        label = "benign"
-                        if hashing:
-                            hash_file = os.path.join(root, "hash.csv")
-                            if os.path.isfile(hash_file) and os.path.getsize(hash_file) > 0:
-                                with open(hash_file, "r") as rfi:
-                                    hash_res = csv.reader(rfi).__next__()[0]
-                                if hash_res in malicious:
-                                    label = "malicious"
-                        else:
-                            if (package, version) in malicious:
-                                label = "malicious"
-                        labels.append(label)
-                        if label == "malicious" and randomize == True:
-                            malicious_len += 1
-
-    # normalize length of feature vectors by extending with zeros
+    # 对齐向量长度
     num_features = len(feature_names)
-    for i in range(len(training_set)):
-        length = len(training_set[i])
-        if length < num_features:
-            training_set[i].extend([0] * (num_features - length))
+    for vec in training_set:
+        if len(vec) < num_features:
+            vec.extend([0] * (num_features - len(vec)))
 
-    if randomize == True:
-        benign_indices = [i for i, s in enumerate(
-            training_set) if labels[i] == "benign"]
+    # 平衡样本
+    if randomize:
+        benign_indices = [i for i, lab in enumerate(labels) if lab == "benign"]
         benign_selected = random.sample(benign_indices, malicious_len)
-        training_set_copy = []
-        labels_copy = []
-        for indx, s in enumerate(training_set):
-            if indx in benign_selected or labels[indx] == "malicious":
-                training_set_copy.append(s)
-                labels_copy.append(labels[indx])
+        training_set = [s for i, s in enumerate(training_set) if i in benign_selected or labels[i] == "malicious"]
+        labels = [lab for i, lab in enumerate(labels) if i in benign_selected or lab == "malicious"]
 
-        training_set = training_set_copy
-        labels = labels_copy
-    
+    # 做 train/test split
+    X_train, X_test, y_train, y_test = train_test_split(training_set, labels, test_size=0.2, random_state=42, stratify=labels)
+
+    # === 训练 ===
     start = timer()
-    # train the classifier
     if classifier == "decision-tree":
-        classifier = tree.DecisionTreeClassifier(criterion="entropy")
-        classifier.fit(training_set, labels)
+        clf = tree.DecisionTreeClassifier(criterion="entropy")
+        clf.fit(X_train, y_train)
     elif classifier == "random-forest":
-        classifier = RandomForestClassifier(criterion="entropy")
-        classifier.fit(training_set, labels)
+        clf = RandomForestClassifier(criterion="entropy")
+        clf.fit(X_train, y_train)
     elif classifier == "naive-bayes":
-        classifier = naive_bayes.BernoulliNB()
-        classifier.fit(training_set, labels)
-    else:
-        classifier = svm.OneClassSVM(
-            gamma='scale', nu=nu, kernel='linear')
-        classifier.fit([datum for i, datum in enumerate(
-            training_set) if labels[i] == "benign"])  
+        clf = naive_bayes.BernoulliNB()
+        clf.fit(X_train, y_train)
+    else:  # SVM
+        clf = svm.OneClassSVM(gamma='scale', nu=nu, kernel='linear')
+        clf.fit([datum for i, datum in enumerate(training_set) if labels[i] == "benign"])
     end = timer()
-    diff = timedelta(seconds=end-start)
-    
-    if performance is not None: 
-        with open(performance, "a+") as wfi:
-            writer = csv.writer(wfi)
-            writer.writerow([diff])
 
-    # render the tree if requested; only applicable for decision trees
+    if performance:
+        with open(performance, "a+") as pf:
+            writer = csv.writer(pf)
+            writer.writerow([timedelta(seconds=end-start)])
+
     if classifier == "decision-tree" and render:
         file, ext = os.path.splitext(render)
         if ext != ".png":
-            print("Rendering tree to PNG requires a file name ending in .png")
-            exit(1)
-        outfile = Source(tree.export_graphviz(
-            classifier, out_file=None, feature_names=feature_names), format="png")
-        outfile.render(file, view=view, cleanup=True)
+            print("Rendering tree to PNG requires a .png extension")
+        else:
+            outfile = Source(tree.export_graphviz(clf, out_file=None, feature_names=feature_names), format="png")
+            outfile.render(file, view=view, cleanup=True)
 
-    # store the classifier and metadata
+    # 使用 X_test 测试并输出指标
+    y_pred = clf.predict(X_test)
+    if classifier != "svm":
+        print("Confusion Matrix:")
+        print(confusion_matrix(y_test, y_pred))
+        print("Classification Report:")
+        print(classification_report(y_test, y_pred))
+        print("Accuracy:", accuracy_score(y_test, y_pred))
+    else:
+        # SVM 是 one-class，只能检测异常
+        # SVM 的预测结果是 1 (benign) 或 -1 (malicious)
+        # 这里将 1 映射为 "benign"，-1 映射为 "malicious"
+        mapped_pred = ["malicious" if v == -1 else "benign" for v in y_pred]
+        print(classification_report(y_test, mapped_pred))
+        print("Accuracy:", accuracy_score(y_test, mapped_pred))
+        print("SVM prediction counts:", {label: mapped_pred.count(label) for label in set(mapped_pred)})
+
+    # 存模型
     with open(output, "wb") as f:
         pickle.dump({
             "feature_names": feature_names,
             "booleanize": booleanize,
             "positive": positive,
-            "classifier": classifier
+            "classifier": clf
         }, f)
 
 
 if __name__ == "__main__":
-    argparse = argparse.ArgumentParser(
-        description="Train a classifier")
-    argparse.add_argument(
-        "classifier", help="Type of classifier to be trained.", choices=["decision-tree", "random-forest", "naive-bayes", "svm"])
-    argparse.add_argument(
-        "malicious", help="CSV file listing known malicious package versions.")
-    argparse.add_argument(
-        "training_sets", help="Directories with features for package versions to train on.", nargs="*")
-    argparse.add_argument(
-        "-b", "--booleanize", help="Whether to booleanize feature vectors.", choices=["true", "false"], default="false")
-    argparse.add_argument(
-        "--hashing", help="Whether hashes are required to label malicious packages. Default is pairs of <package,version>", choices=["true", "false"], default="false")
-    argparse.add_argument(
-        "-x", "--exclude-features", help="List of features to exclude.", required=False, nargs="*", default=[])
-    argparse.add_argument(
-        "-n", "--nu", help="nu value for svm.", required=False, type=float, default=0.001)
-    argparse.add_argument(
-        "-o", "--output", help="Output file to store the pickled classifier in.", required=True)
-    argparse.add_argument(
-        "-p", "--positive", help="Whether to keep only positive values in features", choices=["true", "false"], default="false")
-    argparse.add_argument(
-        "-r", "--render", help="PNG file to render the decision tree to. Ignored for other types of classifiers.", required=False)
-    argparse.add_argument(
-        "--randomize", help="Balance datasets.", choices=["true", "false"], default="false")
-    argparse.add_argument(
-        "-v", "--view", help="View the decision tree graphically. Ignored unless --render is specified.", action="store_true")
-    argparse.add_argument(
-        "-l", "--leave_out", help="Training files to leave out", required=False, nargs="*", default=[])
-    argparse.add_argument(
-        "-u", "--until", help="Specify the date up to which samples should be considered for training.", required=False, default="2100-01-01T00:00:00.000Z")
+    parser = argparse.ArgumentParser(description="Train classifier from all-features.csv")
+    parser.add_argument("classifier", choices=["decision-tree", "random-forest", "naive-bayes", "svm"])
+    parser.add_argument("malicious", help="CSV with malicious package,version pairs")
+    parser.add_argument("features_csv", help="The big CSV file with features for all tarballs")
+    parser.add_argument("-o", "--output", required=True, help="Pickled model file")
+    parser.add_argument("-b", "--booleanize", choices=["true", "false"], default="false")
+    parser.add_argument("--hashing", choices=["true", "false"], default="false")
+    parser.add_argument("-x", "--exclude-features", nargs="*", default=[])
+    parser.add_argument("-n", "--nu", type=float, default=0.001)
+    parser.add_argument("-p", "--positive", choices=["true", "false"], default="false")
+    parser.add_argument("-r", "--render", help="Render decision tree to PNG", required=False)
+    parser.add_argument("--randomize", choices=["true", "false"], default="false")
+    parser.add_argument("-v", "--view", action="store_true")
+    parser.add_argument("-u", "--until", default="2100-01-01T00:00:00.000Z")
+    parser.add_argument("--performance", help="CSV to log training time")
 
-    args = argparse.parse_args()
-    booleanize = True if args.booleanize == "true" else False
-    hashing = True if args.hashing == "true" else False
-    positive = True if args.positive == "true" else False
-    randomize = True if args.randomize == "true" else False
+    args = parser.parse_args()
+    booleanize = args.booleanize == "true"
+    hashing = args.hashing == "true"
+    positive = args.positive == "true"
+    randomize = args.randomize == "true"
     until = parse_date(args.until)
-    train_classifier(args.classifier, args.malicious, args.training_sets, args.output, booleanize, hashing, args.exclude_features,
-                     args.nu, positive, args.render, randomize, args.view, args.leave_out, until)
+
+    train_classifier_from_bigcsv(args.classifier, args.malicious, args.features_csv,
+                                 args.output, booleanize, hashing, args.exclude_features,
+                                 args.nu, positive, args.render, randomize, args.view, until,
+                                 args.performance)
