@@ -404,26 +404,26 @@ ALL_QUERIES = {
         """
     },
 
-    "cookie_access": {
-        "javascript": r"""
-        [
-          (member_expression
-            object: (identifier) @obj
-            property: (property_identifier) @prop)
-          (#match? @obj "^(document)$")
-          (#eq? @prop "cookie")
-        ]
-        """,
-        "typescript": r"""
-        [
-          (member_expression
-            object: (identifier) @obj
-            property: (property_identifier) @prop)
-          (#match? @obj "^(document)$")
-          (#eq? @prop "cookie")
-        ]
-        """
-    }
+    # "cookie_access": {
+    #     "javascript": r"""
+    #     [
+    #       (member_expression
+    #         object: (identifier) @obj
+    #         property: (property_identifier) @prop)
+    #       (#match? @obj "^(document)$")
+    #       (#eq? @prop "cookie")
+    #     ]
+    #     """,
+    #     "typescript": r"""
+    #     [
+    #       (member_expression
+    #         object: (identifier) @obj
+    #         property: (property_identifier) @prop)
+    #       (#match? @obj "^(document)$")
+    #       (#eq? @prop "cookie")
+    #     ]
+    #     """
+    # }
 }
 
 
@@ -433,6 +433,23 @@ PII_KEYWORDS = re.compile(
        session(id)?|cookie|auth(entication)?|credential(s)?|private[_-]?key|ssh[_-]?key|jwt|refresh[_-]?token)\b
     """,
 )
+
+BOOL_FEATURES = ["pii_access",
+        "fs_access","process_creation","network_access",
+        "crypto_api","data_encoding","dynamic_code",
+        "install_scripts",]
+
+VAL_FEATURES = ["entropy_average","entropy_std_dev",]
+
+ALL_FEATURES = BOOL_FEATURES + VAL_FEATURES
+
+CATEGORY_GROUPS = {
+    "Sensitive Information Access": ["pii_access"],
+    "System Resources and Network Access": ["fs_access", "process_creation", "network_access"],
+    "Cryptography and Encoding APIs": ["crypto_api", "data_encoding"],
+    "Dynamic Code Execution": ["dynamic_code"],
+    "Package Installation Risk": ["install_scripts"]
+}
 
 
 def calculate_shannon_entropy(data):
@@ -462,10 +479,11 @@ class FeatureExtractor:
         return results
 
     def extract_from_content(self, content, file_path):
-        features = {k:0 for k in ['pii_access','fs_access','process_creation',
-                                   'network_access','crypto_api','data_encoding','dynamic_code']}
+        features = {group: 0 for group in CATEGORY_GROUPS}
+
+        # Check for PII
         if PII_KEYWORDS.search(content):
-            features['pii_access'] = 1
+            features["Sensitive Information Access"] = 1
 
         parser = None
         queries = None
@@ -489,41 +507,52 @@ class FeatureExtractor:
                     continue
                 matches = self._query_ast(language, tree, source_bytes, query_str)
                 if matches:
-                    features[feature_name] = 1
+                    # Aggregate features into categories
+                    if feature_name in CATEGORY_GROUPS["Sensitive Information Access"]:
+                        features["Sensitive Information Access"] = 1
+                    if feature_name in CATEGORY_GROUPS["System Resources and Network Access"]:
+                        features["System Resources and Network Access"] = 1
+                    if feature_name in CATEGORY_GROUPS["Cryptography and Encoding APIs"]:
+                        features["Cryptography and Encoding APIs"] = 1
+                    if feature_name in CATEGORY_GROUPS["Dynamic Code Execution"]:
+                        features["Dynamic Code Execution"] = 1
+                    if feature_name in CATEGORY_GROUPS["Package Installation Risk"]:
+                        features["Package Installation Risk"] = 1
+
+        return features
 
         return features
 
     def extract_from_package(self, package_path):
-        aggregated_features = {k:0 for k in ['pii_access','fs_access','process_creation',
-                                             'network_access','crypto_api','data_encoding','dynamic_code',
-                                             'install_scripts','entropy_average','entropy_std_dev']}
+        aggregated_features = {group: 0 for group in CATEGORY_GROUPS}
         entropies = []
         file_count = 0
 
-        # package.json install scripts
+        # Check for package.json install scripts
         package_json_path = os.path.join(package_path, 'package.json')
         if os.path.exists(package_json_path):
             try:
-                with open(package_json_path,'r',encoding='utf-8') as f:
+                with open(package_json_path, 'r', encoding='utf-8') as f:
                     package_json = json.load(f)
-                    scripts = package_json.get('scripts',{})
-                    if any(s in scripts for s in ['preinstall','install','postinstall']):
-                        aggregated_features['install_scripts'] = 1
-            except:
-                pass
+                    scripts = package_json.get('scripts', {})
+                    if any(s in scripts for s in ['preinstall', 'install', 'postinstall']):
+                        aggregated_features["Package Installation Risk"] = 1
+            except Exception as e:
+                print(f"Error reading package.json: {e}")
 
+        # Process files for feature extraction
         for root, _, files in os.walk(package_path):
             for file in files:
                 file_path = os.path.join(root, file)
                 try:
-                    with open(file_path,'r',encoding='utf-8',errors='ignore') as f:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                     file_features = self.extract_from_content(content, file)
-                    for k,v in file_features.items():
-                        aggregated_features[k] += v
+                    for group, value in file_features.items():
+                        aggregated_features[group] += value
 
-                    # entropy
-                    with open(file_path,'rb') as bf:
+                    # Calculate file entropy
+                    with open(file_path, 'rb') as bf:
                         byte_content = bf.read()
                     file_entropy = calculate_shannon_entropy(byte_content)
                     entropies.append(file_entropy)
@@ -532,12 +561,12 @@ class FeatureExtractor:
                     print(f"Error processing {file_path}: {e}")
                     pass
 
+        # Add entropy statistics to aggregated features
         if entropies:
             aggregated_features['entropy_average'] = np.mean(entropies)
             aggregated_features['entropy_std_dev'] = np.std(entropies)
 
         return aggregated_features
-
 
 def _guess_unpacked_root(tmp_dir: str) -> str:
     """
@@ -724,12 +753,8 @@ def process_package_archive(archive_path: str):
         row.update(feats)
         return row
 
-def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = None):
-    feature_cols = [
-        "pii_access","fs_access","process_creation","network_access",
-        "crypto_api","data_encoding","dynamic_code",
-        "install_scripts","entropy_average","entropy_std_dev"
-    ]
+def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = 1):
+    feature_cols = ALL_FEATURES
     meta_cols = ["tarball","package_name","package_version"]
     header = meta_cols + feature_cols
 

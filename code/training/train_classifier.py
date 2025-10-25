@@ -7,6 +7,7 @@ import pickle
 import random
 from datetime import timedelta
 from timeit import default_timer as timer
+from collections import Counter
 
 from graphviz import Source
 from sklearn import naive_bayes, svm, tree
@@ -14,6 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (accuracy_score, classification_report,
                              confusion_matrix)
 from sklearn.model_selection import train_test_split
+from imblearn.over_sampling import SMOTE
 from util import parse_date  
 
 CONTINUOUS_FEATURES = ["entropy_average", "entropy_std_dev", "time"]
@@ -106,7 +108,19 @@ def train_classifier_from_bigcsv(classifier, malicious_path, features_csv, outpu
         training_set = [s for i, s in enumerate(training_set) if i in benign_selected or labels[i] == "malicious"]
         labels = [lab for i, lab in enumerate(labels) if i in benign_selected or lab == "malicious"]
 
-    X_train, X_test, y_train, y_test = train_test_split(training_set, labels, test_size=0.2, random_state=42, stratify=labels)
+    X_train, X_test, y_train, y_test = train_test_split(training_set, labels, test_size=0.9, random_state=42, stratify=labels)
+
+    # class_counts = Counter(y_train)
+    # minority_class = 1 if class_counts[1] < class_counts[0] else 0
+    # n_minority = class_counts[minority_class]
+
+    # k_neighbors = max(1, min(5, n_minority - 1))
+
+    # sm = SMOTE(random_state=42, k_neighbors=k_neighbors)
+    # before_counts = Counter(y_train)
+    # X_train, y_train = sm.fit_resample(X_train, y_train)
+    # after_counts = Counter(y_train)
+    # print(f"Before SMOTE: {before_counts}, After SMOTE: {after_counts}")
 
     start = timer()
     if classifier == "decision-tree":

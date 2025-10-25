@@ -163,7 +163,7 @@ def extract_name_version_from_archive(archive_path: str):
 
         return None, None
 
-def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = None):
+def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = 3):
     """
     Recursively scan all .tgz/.tar.gz/.tar/.zip in the directory, process in parallel, and write results to CSV in real-time.
     """
