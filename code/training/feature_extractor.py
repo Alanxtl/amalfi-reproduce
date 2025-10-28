@@ -754,9 +754,9 @@ def process_package_archive(archive_path: str):
         return row
 
 def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = 1):
-    feature_cols = ALL_FEATURES
-    meta_cols = ["tarball","package_name","package_version"]
-    header = meta_cols + feature_cols
+    feature_cols = VAL_FEATURES + list(CATEGORY_GROUPS.keys())  # Include category group names
+    meta_cols = ["tarball", "package_name", "package_version"]
+    header = meta_cols + feature_cols  # Ensure the header includes the new categories
 
     write_header = not os.path.exists(out_csv)
 
@@ -784,13 +784,19 @@ def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = 1):
                 try:
                     row = future.result()
                     if not row:
+                        print(f"\n[ERROR] {path}: Processing returned no data.")
                         continue
 
+                    # Ensure all columns are in the row, set missing ones to 0 or empty
                     for col in header:
                         if col not in row:
-                            row[col] = 0 if col in feature_cols else ""
+                            if col in feature_cols:
+                                row[col] = 0
+                            else:
+                                row[col] = ""
 
-                    writer.writerow(row) 
+                    writer.writerow(row)
+                    f.flush()
                 except Exception as e:
                     print(f"\n[ERROR] {path}: {e}")
 

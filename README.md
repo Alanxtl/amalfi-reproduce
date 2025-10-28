@@ -9,7 +9,7 @@ pip install -r requirements.txt
 ## 2. Generate True Labels for malicious samples
 
 ```bash
-python generate_malicious_csv.py ./mal_dataset/dir -o ./features/malicious.csv
+python generate_malicious_csv.py ./mal_dataset/dir -o ./features/true_value.csv
 ```
 
 ## 3. Extract Feature Vectors
@@ -21,7 +21,7 @@ python ./code/training/feature_extractor.py --dataset ./dataset/dir --out ./feat
 ## 4. Train the Model
 
 ```bash
-python ./code/training/train_classifier.py random-forest ./features/malicious.csv ./features/train.csv -o model.pkl
+python ./code/training/train_classifier.py decision-tree ./features/true_value.csv ./features/train.csv -o model.pkl 
 ```
 
 ## 5. Make Predictions
@@ -35,7 +35,7 @@ python predict.py model.pkl ./features/test.csv -o predictions.csv
 ## 6. Generate True Labels for Test Set
 
 ```bash
-python generate_malicious_csv.py ./test_mal_dataset/dir -o ./features/test_true_value.csv
+python generate_malicious_csv.py ./test_dataset/dir -o ./features/test_true_value.csv
 ```
 
 ## 7. Evaluate Prediction Metrics
