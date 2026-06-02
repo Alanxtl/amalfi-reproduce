@@ -6,7 +6,10 @@ import os
 import re
 import tarfile
 import tempfile
+import time
 import zipfile
+from collections import deque
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +20,7 @@ from tqdm import tqdm  # pip install tqdm
 from tree_sitter import Language, Parser
 
 # --- Language Initialization ---
-JS_LANGUAGE = Language(jsts.language()) 
+JS_LANGUAGE = Language(jsts.language())
 TS_LANGUAGE = Language(tsts.language_typescript())
 
 # --- Feature Queries ---
@@ -90,9 +93,8 @@ ALL_QUERIES = {
             (#match? @prop "^(read(File|FileSync|dir)|write(File|FileSync)|open|exists|create(Read|Write)Stream)$")
           )
         ]
-        """
+        """,
     },
-
     "process_creation": {
         "javascript": r"""
         [
@@ -159,9 +161,8 @@ ALL_QUERIES = {
             (#match? @prop "^(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)$")
           )
         ]
-        """
+        """,
     },
-
     "network_access": {
         "javascript": r"""
         [
@@ -244,9 +245,8 @@ ALL_QUERIES = {
             (#match? @obj "^(http|https|net|dgram|tls)$")
           )
         ]
-        """
+        """,
     },
-
     "crypto_api": {
         "javascript": r"""
         [
@@ -319,9 +319,8 @@ ALL_QUERIES = {
             (#eq? @p2 "subtle")
           )
         ]
-        """
+        """,
     },
-
     "data_encoding": {
         "javascript": r"""
         [
@@ -360,9 +359,8 @@ ALL_QUERIES = {
             (#match? @prop "^(from|toString)$")
           )
         ]
-        """
+        """,
     },
-
     "dynamic_code": {
         "javascript": r"""
         [
@@ -401,9 +399,8 @@ ALL_QUERIES = {
             (#match? @prop "^(runInNewContext|runInThisContext|Script)$")
           )
         ]
-        """
+        """,
     },
-
     # "cookie_access": {
     #     "javascript": r"""
     #     [
@@ -434,21 +431,34 @@ PII_KEYWORDS = re.compile(
     """,
 )
 
-BOOL_FEATURES = ["pii_access",
-        "fs_access","process_creation","network_access",
-        "crypto_api","data_encoding","dynamic_code",
-        "install_scripts",]
+BOOL_FEATURES = [
+    "pii_access",
+    "fs_access",
+    "process_creation",
+    "network_access",
+    "crypto_api",
+    "data_encoding",
+    "dynamic_code",
+    "install_scripts",
+]
 
-VAL_FEATURES = ["entropy_average","entropy_std_dev",]
+VAL_FEATURES = [
+    "entropy_average",
+    "entropy_std_dev",
+]
 
 ALL_FEATURES = BOOL_FEATURES + VAL_FEATURES
 
 CATEGORY_GROUPS = {
     "Sensitive Information Access": ["pii_access"],
-    "System Resources and Network Access": ["fs_access", "process_creation", "network_access"],
+    "System Resources and Network Access": [
+        "fs_access",
+        "process_creation",
+        "network_access",
+    ],
     "Cryptography and Encoding APIs": ["crypto_api", "data_encoding"],
     "Dynamic Code Execution": ["dynamic_code"],
-    "Package Installation Risk": ["install_scripts"]
+    "Package Installation Risk": ["install_scripts"],
 }
 
 
@@ -461,6 +471,7 @@ def calculate_shannon_entropy(data):
     probabilities = [count / len(data) for count in counts.values()]
     return entropy(probabilities, base=2)
 
+
 # --- FeatureExtractor ---
 class FeatureExtractor:
     def __init__(self):
@@ -469,12 +480,12 @@ class FeatureExtractor:
 
     def _query_ast(self, language, tree, source_bytes, query_str):
         query = language.query(query_str)
-        captures = query.captures(tree.root_node) 
+        captures = query.captures(tree.root_node)
 
         results = []
         for capture_name, nodes in captures.items():
             for node in nodes:
-                text = source_bytes[node.start_byte:node.end_byte].decode("utf8")
+                text = source_bytes[node.start_byte : node.end_byte].decode("utf8")
                 results.append((capture_name, text))
         return results
 
@@ -489,14 +500,14 @@ class FeatureExtractor:
         queries = None
         language = None
 
-        if file_path.endswith('.js'):
+        if file_path.endswith(".js"):
             parser = self.js_parser
             language = JS_LANGUAGE
-            queries = {k: v.get("javascript") for k,v in ALL_QUERIES.items()}
-        elif file_path.endswith('.ts'):
+            queries = {k: v.get("javascript") for k, v in ALL_QUERIES.items()}
+        elif file_path.endswith(".ts"):
             parser = self.ts_parser
             language = TS_LANGUAGE
-            queries = {k: v.get("typescript") for k,v in ALL_QUERIES.items()}
+            queries = {k: v.get("typescript") for k, v in ALL_QUERIES.items()}
 
         if parser:
             tree = parser.parse(bytes(content, "utf8"))
@@ -510,9 +521,15 @@ class FeatureExtractor:
                     # Aggregate features into categories
                     if feature_name in CATEGORY_GROUPS["Sensitive Information Access"]:
                         features["Sensitive Information Access"] = 1
-                    if feature_name in CATEGORY_GROUPS["System Resources and Network Access"]:
+                    if (
+                        feature_name
+                        in CATEGORY_GROUPS["System Resources and Network Access"]
+                    ):
                         features["System Resources and Network Access"] = 1
-                    if feature_name in CATEGORY_GROUPS["Cryptography and Encoding APIs"]:
+                    if (
+                        feature_name
+                        in CATEGORY_GROUPS["Cryptography and Encoding APIs"]
+                    ):
                         features["Cryptography and Encoding APIs"] = 1
                     if feature_name in CATEGORY_GROUPS["Dynamic Code Execution"]:
                         features["Dynamic Code Execution"] = 1
@@ -529,13 +546,15 @@ class FeatureExtractor:
         file_count = 0
 
         # Check for package.json install scripts
-        package_json_path = os.path.join(package_path, 'package.json')
+        package_json_path = os.path.join(package_path, "package.json")
         if os.path.exists(package_json_path):
             try:
-                with open(package_json_path, 'r', encoding='utf-8') as f:
+                with open(package_json_path, "r", encoding="utf-8") as f:
                     package_json = json.load(f)
-                    scripts = package_json.get('scripts', {})
-                    if any(s in scripts for s in ['preinstall', 'install', 'postinstall']):
+                    scripts = package_json.get("scripts", {})
+                    if any(
+                        s in scripts for s in ["preinstall", "install", "postinstall"]
+                    ):
                         aggregated_features["Package Installation Risk"] = 1
             except Exception as e:
                 print(f"Error reading package.json: {e}")
@@ -545,14 +564,14 @@ class FeatureExtractor:
             for file in files:
                 file_path = os.path.join(root, file)
                 try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                     file_features = self.extract_from_content(content, file)
                     for group, value in file_features.items():
                         aggregated_features[group] += value
 
                     # Calculate file entropy
-                    with open(file_path, 'rb') as bf:
+                    with open(file_path, "rb") as bf:
                         byte_content = bf.read()
                     file_entropy = calculate_shannon_entropy(byte_content)
                     entropies.append(file_entropy)
@@ -563,10 +582,11 @@ class FeatureExtractor:
 
         # Add entropy statistics to aggregated features
         if entropies:
-            aggregated_features['entropy_average'] = np.mean(entropies)
-            aggregated_features['entropy_std_dev'] = np.std(entropies)
+            aggregated_features["entropy_average"] = np.mean(entropies)
+            aggregated_features["entropy_std_dev"] = np.std(entropies)
 
         return aggregated_features
+
 
 def _guess_unpacked_root(tmp_dir: str) -> str:
     """
@@ -574,7 +594,7 @@ def _guess_unpacked_root(tmp_dir: str) -> str:
     - If there's only one top-level directory (common 'package/' from npm pack), enter that directory
     - Otherwise use tmp_dir itself
     """
-    entries = [e for e in os.listdir(tmp_dir) if not e.startswith('.')]
+    entries = [e for e in os.listdir(tmp_dir) if not e.startswith(".")]
     if len(entries) == 1:
         candidate = os.path.join(tmp_dir, entries[0])
         if os.path.isdir(candidate):
@@ -584,15 +604,16 @@ def _guess_unpacked_root(tmp_dir: str) -> str:
 
 def _read_pkg_meta(unpacked_path: str):
     """Read name/version from package.json (returns None if not exists or on error)"""
-    pkg_json = os.path.join(unpacked_path, 'package.json')
+    pkg_json = os.path.join(unpacked_path, "package.json")
     name = version = None
     if os.path.exists(pkg_json):
         try:
             import json
-            with open(pkg_json, 'r', encoding='utf-8') as f:
+
+            with open(pkg_json, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                name = data.get('name')
-                version = data.get('version')
+                name = data.get("name")
+                version = data.get("version")
         except Exception:
             pass
     return name, version
@@ -606,12 +627,14 @@ def _is_within_directory(base_dir: str, target_path: str) -> bool:
     except ValueError:
         return False
 
+
 def _safe_extractall_tar(tar: tarfile.TarFile, path: str):
     for member in tar.getmembers():
         target = os.path.join(path, member.name)
         if not _is_within_directory(path, target):
             raise Exception(f"Blocked path traversal in tar: {member.name}")
     tar.extractall(path)
+
 
 def _safe_extractall_zip(zf: zipfile.ZipFile, path: str):
     for member in zf.namelist():
@@ -620,10 +643,13 @@ def _safe_extractall_zip(zf: zipfile.ZipFile, path: str):
             raise Exception(f"Blocked path traversal in zip: {member}")
     zf.extractall(path)
 
+
 # ---------- Root Directory Inference (More Robust) ----------
+
 
 def _has_pkg_json(p: str) -> bool:
     return os.path.isfile(os.path.join(p, "package.json"))
+
 
 def _list_top_level_entries(root: str):
     # Filter hidden and common irrelevant entries (can be modified as needed)
@@ -636,6 +662,7 @@ def _list_top_level_entries(root: str):
             continue
         entries.append(os.path.join(root, name))
     return entries
+
 
 def _guess_unpacked_root(tmp_dir: str) -> str:
     """
@@ -677,6 +704,7 @@ def _zip_is_encrypted(zf: zipfile.ZipFile) -> bool:
     # 任何条目设置了加密位（flag bit 0x1）即认为加密
     return any((zi.flag_bits & 0x1) != 0 for zi in zf.infolist())
 
+
 def _safe_extractall_zip(zf: zipfile.ZipFile, path: str, password: bytes | None = None):
     # Path traversal protection
     for member in zf.namelist():
@@ -686,13 +714,14 @@ def _safe_extractall_zip(zf: zipfile.ZipFile, path: str, password: bytes | None 
     # Extract (pwd can be passed even for unencrypted files, will be ignored)
     zf.extractall(path=path, pwd=password)
 
+
 # ---------- Unified Entry Point for .tgz/.tar/.zip Processing ----------
 def process_package_archive(archive_path: str):
     """
     Unpack + feature extraction, return row dict (for scan_tarballs_to_csv to write to unified large CSV)
     Returns None on failure
     """
-    tarball_name = os.path.basename(archive_path)
+    tarball_name = os.path.basename(archive_path).replace("\\", "/").split("/")[-1]
 
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
@@ -709,12 +738,17 @@ def process_package_archive(archive_path: str):
                             except RuntimeError as re:
                                 try:
                                     import pyzipper  # pip install pyzipper
+
                                     with pyzipper.AESZipFile(archive_path) as pzf:
                                         pzf.pwd = b"infected"
                                         for name in pzf.namelist():
                                             target = os.path.join(temp_dir, name)
-                                            if not _is_within_directory(temp_dir, target):
-                                                raise Exception(f"Blocked path traversal in zip: {name}")
+                                            if not _is_within_directory(
+                                                temp_dir, target
+                                            ):
+                                                raise Exception(
+                                                    f"Blocked path traversal in zip: {name}"
+                                                )
                                         pzf.extractall(temp_dir)
                                 except ImportError:
                                     raise RuntimeError(
@@ -725,7 +759,9 @@ def process_package_archive(archive_path: str):
                         else:
                             _safe_extractall_zip(zf, temp_dir, password=None)
                 except Exception as e:
-                    print(f"[SKIP] Failed to unpack (zip) {os.path.basename(archive_path)}: {e}")
+                    print(
+                        f"[SKIP] Failed to unpack (zip) {os.path.basename(archive_path)}: {e}"
+                    )
                     return None
             else:
                 print(f"[SKIP] Unsupported archive type: {archive_path}")
@@ -747,69 +783,340 @@ def process_package_archive(archive_path: str):
 
         row = {
             "tarball": tarball_name,
-            "package_name": pkg_name or Path(archive_path).stem.replace(".tgz", "").replace(".tar", "").replace(".zip", ""),
+            "package_name": pkg_name
+            or Path(archive_path)
+            .stem.replace(".tgz", "")
+            .replace(".tar", "")
+            .replace(".zip", ""),
             "package_version": pkg_ver or "",
         }
         row.update(feats)
         return row
 
-def scan_tarballs_to_csv(tarballs_dir: str, out_csv: str, max_workers: int = 1):
-    feature_cols = VAL_FEATURES + list(CATEGORY_GROUPS.keys())  # Include category group names
-    meta_cols = ["tarball", "package_name", "package_version"]
-    header = meta_cols + feature_cols  # Ensure the header includes the new categories
 
-    write_header = not os.path.exists(out_csv)
-
-    # Collect archive paths
+def _collect_archive_paths(tarballs_dir: str) -> list[str]:
     archive_paths = []
     for root, _, files in os.walk(tarballs_dir):
         for fn in files:
             lower = fn.lower()
             if lower.endswith((".tgz", ".tar.gz", ".tar", ".zip")):
                 archive_paths.append(os.path.join(root, fn))
+    return archive_paths
 
+
+def _is_pool_failure(exc: Exception) -> bool:
+    if isinstance(exc, BrokenProcessPool):
+        return True
+    message = str(exc).lower()
+    return "process pool" in message or "terminated abruptly" in message
+
+
+def _write_feature_row(
+    writer: csv.DictWriter,
+    handle,
+    row: dict,
+    *,
+    header: list[str],
+    feature_cols: list[str],
+) -> None:
+    for col in header:
+        if col not in row:
+            if col in feature_cols:
+                row[col] = 0
+            else:
+                row[col] = ""
+
+    writer.writerow(row)
+    handle.flush()
+
+
+def _emit_scan_summary(summary_path: str | None, payload: dict) -> None:
+    if not summary_path:
+        return
+    path = Path(summary_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _shutdown_executor(
+    executor: concurrent.futures.ProcessPoolExecutor | None, *, terminate: bool
+) -> None:
+    if executor is None:
+        return
+    try:
+        if terminate:
+            executor.shutdown(wait=False, cancel_futures=True)
+            for process in (getattr(executor, "_processes", {}) or {}).values():
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+            for process in (getattr(executor, "_processes", {}) or {}).values():
+                try:
+                    process.join(timeout=1)
+                except Exception:
+                    pass
+        else:
+            executor.shutdown(wait=True, cancel_futures=True)
+    except TypeError:
+        # Some test doubles do not implement the Python 3.10 shutdown signature.
+        executor.shutdown()
+
+
+def _record_skipped_archive(
+    skipped_archives: list[dict],
+    path: str,
+    reason: str,
+    *,
+    progress,
+) -> None:
+    skipped_archives.append({"path": path, "reason": reason})
+    print(f"\n[WARN] {path}: {reason}")
+    progress.update(1)
+
+
+def scan_tarballs_to_csv(
+    tarballs_dir: str,
+    out_csv: str,
+    max_workers: int = 1,
+    *,
+    archive_timeout_seconds: int | None = None,
+    max_attempts: int = 2,
+    summary_path: str | None = None,
+):
+    worker_count = max_workers or 1
+    feature_cols = VAL_FEATURES + list(
+        CATEGORY_GROUPS.keys()
+    )  # Include category group names
+    meta_cols = ["tarball", "package_name", "package_version"]
+    header = meta_cols + feature_cols  # Ensure the header includes the new categories
+
+    write_header = not os.path.exists(out_csv)
+
+    archive_paths = _collect_archive_paths(tarballs_dir)
     print(f"Found {len(archive_paths)} archives under {tarballs_dir}")
 
-    # Parallel processing and real-time writing
+    skipped_archives: list[dict] = []
+    processed_archive_count = 0
     with open(out_csv, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=header)
         if write_header:
             writer.writeheader()
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_package_archive, path): path for path in archive_paths}
+        progress = tqdm(total=len(archive_paths), desc="Processing archives")
+        if worker_count > 1 and archive_paths:
+            pending_paths = deque(archive_paths)
+            attempts: dict[str, int] = {}
+            futures: dict[object, dict[str, object]] = {}
+            executor = None
 
-            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Processing archives"):
-                path = futures[future]
-                try:
-                    row = future.result()
-                    if not row:
-                        print(f"\n[ERROR] {path}: Processing returned no data.")
+            def start_executor() -> None:
+                nonlocal executor
+                executor = concurrent.futures.ProcessPoolExecutor(max_workers=worker_count)
+
+            def submit_until_full() -> None:
+                while pending_paths and len(futures) < worker_count:
+                    path = pending_paths.popleft()
+                    attempts[path] = attempts.get(path, 0) + 1
+                    futures[executor.submit(process_package_archive, path)] = {
+                        "path": path,
+                        "started_at": time.monotonic(),
+                    }
+
+            try:
+                start_executor()
+                submit_until_full()
+
+                while futures:
+                    wait_timeout = None
+                    if archive_timeout_seconds is not None:
+                        now = time.monotonic()
+                        earliest_deadline = min(
+                            info["started_at"] + archive_timeout_seconds
+                            for info in futures.values()
+                        )
+                        wait_timeout = max(0, earliest_deadline - now)
+
+                    done, not_done = concurrent.futures.wait(
+                        set(futures.keys()),
+                        timeout=wait_timeout,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+
+                    if not done:
+                        now = time.monotonic()
+                        timed_out_paths: list[str] = []
+                        retry_paths: list[str] = []
+                        for future in list(not_done):
+                            info = futures.pop(future)
+                            path = str(info["path"])
+                            started_at = float(info["started_at"])
+                            if (
+                                archive_timeout_seconds is not None
+                                and now - started_at >= archive_timeout_seconds
+                            ):
+                                timed_out_paths.append(path)
+                            else:
+                                retry_paths.append(path)
+                        _shutdown_executor(executor, terminate=True)
+                        executor = None
+                        for path in timed_out_paths:
+                            _record_skipped_archive(
+                                skipped_archives,
+                                path,
+                                f"timed out after {archive_timeout_seconds} seconds",
+                                progress=progress,
+                            )
+                        for path in reversed(retry_paths):
+                            pending_paths.appendleft(path)
+                        if pending_paths:
+                            start_executor()
+                            submit_until_full()
                         continue
 
-                    # Ensure all columns are in the row, set missing ones to 0 or empty
-                    for col in header:
-                        if col not in row:
-                            if col in feature_cols:
-                                row[col] = 0
+                    pool_failure_paths: list[str] | None = None
+                    pool_failure_reason = ""
+                    for future in done:
+                        info = futures.pop(future)
+                        path = str(info["path"])
+                        try:
+                            row = future.result()
+                        except Exception as exc:
+                            if _is_pool_failure(exc):
+                                pool_failure_reason = str(exc)
+                                pool_failure_paths = [path] + [
+                                    str(futures.pop(other_future)["path"])
+                                    for other_future in list(done)
+                                    if other_future is not future and other_future in futures
+                                ] + [
+                                    str(futures.pop(other_future)["path"])
+                                    for other_future in list(not_done)
+                                ]
+                                _shutdown_executor(executor, terminate=True)
+                                executor = None
+                                break
+                            _record_skipped_archive(
+                                skipped_archives, path, str(exc), progress=progress
+                            )
+                            continue
+
+                        if not row:
+                            _record_skipped_archive(
+                                skipped_archives,
+                                path,
+                                "Processing returned no data.",
+                                progress=progress,
+                            )
+                            continue
+
+                        _write_feature_row(
+                            writer,
+                            f,
+                            row,
+                            header=header,
+                            feature_cols=feature_cols,
+                        )
+                        processed_archive_count += 1
+                        progress.update(1)
+
+                    if pool_failure_paths is not None:
+                        for path in reversed(pool_failure_paths):
+                            if attempts.get(path, 0) >= max_attempts:
+                                _record_skipped_archive(
+                                    skipped_archives,
+                                    path,
+                                    (
+                                        "process pool failed after "
+                                        f"{attempts.get(path, 0)} attempt(s): {pool_failure_reason}"
+                                    ),
+                                    progress=progress,
+                                )
                             else:
-                                row[col] = ""
+                                pending_paths.appendleft(path)
+                        if pending_paths:
+                            start_executor()
+                            submit_until_full()
+                        continue
 
-                    writer.writerow(row)
-                    f.flush()
-                except Exception as e:
-                    print(f"\n[ERROR] {path}: {e}")
+                    submit_until_full()
+            finally:
+                progress.close()
+                _shutdown_executor(executor, terminate=False)
+        else:
+            try:
+                for path in archive_paths:
+                    try:
+                        row = process_package_archive(path)
+                    except Exception as exc:
+                        _record_skipped_archive(
+                            skipped_archives, path, str(exc), progress=progress
+                        )
+                        continue
 
-    print(f"✅ Done. Results written to {out_csv}")
+                    if not row:
+                        _record_skipped_archive(
+                            skipped_archives,
+                            path,
+                            "Processing returned no data.",
+                            progress=progress,
+                        )
+                        continue
 
-    
-if __name__ == '__main__':
-  parser = argparse.ArgumentParser(description="Batch scan npm package archives and extract features to CSV.")
-  parser.add_argument('--dataset', type=str, required=True, help='Directory containing package archives (.tgz/.tar.gz/.tar/.zip)')
-  parser.add_argument('--out', type=str, required=True, help='Output CSV file path')
-  parser.add_argument('--max_workers', type=int, default=None, help='Maximum number of parallel workers')
-  args = parser.parse_args()
+                    _write_feature_row(
+                        writer,
+                        f,
+                        row,
+                        header=header,
+                        feature_cols=feature_cols,
+                    )
+                    processed_archive_count += 1
+                    progress.update(1)
+            finally:
+                progress.close()
 
-  os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
-  scan_tarballs_to_csv(args.dataset, args.out, max_workers=args.max_workers)
-  print(f"Done. CSV at: {os.path.abspath(args.out)}")
+    print(f"Done. Results written to {out_csv}")
+    summary = {
+        "requested_archive_count": len(archive_paths),
+        "processed_archive_count": processed_archive_count,
+        "skipped_archive_count": len(skipped_archives),
+        "max_workers": worker_count,
+        "archive_timeout_seconds": archive_timeout_seconds,
+        "skipped_archives": skipped_archives,
+    }
+    _emit_scan_summary(summary_path, summary)
+    return summary
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Batch scan npm package archives and extract features to CSV."
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="Directory containing package archives (.tgz/.tar.gz/.tar/.zip)",
+    )
+    parser.add_argument("--out", type=str, required=True, help="Output CSV file path")
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=None,
+        help="Maximum number of parallel workers",
+    )
+    parser.add_argument(
+        "--archive_timeout_seconds",
+        type=int,
+        default=None,
+        help="Skip archives when no worker finishes within this many seconds.",
+    )
+    args = parser.parse_args()
+
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    scan_tarballs_to_csv(
+        args.dataset,
+        args.out,
+        max_workers=args.max_workers,
+        archive_timeout_seconds=args.archive_timeout_seconds,
+    )
+    print(f"Done. CSV at: {os.path.abspath(args.out)}")

@@ -1,115 +1,108 @@
-# Reproduction Procedure
+# Amalfi Reproduction
 
-## 1. Install Prerequisites
+This repository is a runnable reproduction of:
 
-```bash
-pip install -r requirements.txt
+> Practical Automated Detection of Malicious npm Packages
+
+Amalfi detects malicious npm packages with machine-learning classifiers, package reproducibility checks, and clone detection. This reproduction focuses on the NPM malicious-package classification workflow and provides a standardized split pipeline in `standard_pipeline.py` for controlled train/test experiments.
+
+The pipeline consumes explicit train/test split manifests and writes a `metrics.json` file for downstream result aggregation.
+
+## Environment
+
+Recommended on Windows PowerShell from this repository root:
+
+```powershell
+uv sync
 ```
 
-## 2. Generate True Labels for malicious samples
+If the requested Python version is not installed, let `uv` install it first:
 
-```bash
-python generate_malicious_csv.py ./mal_dataset/dir -o ./features/true_value.csv
+```powershell
+uv python install 3.10
+uv sync
 ```
 
-## 3. Extract Feature Vectors
+The environment is ignored by git and can remain in place.
 
-```bash
-python ./code/training/feature_extractor.py --dataset ./dataset/dir --out ./features/train.csv
+## Inputs
+
+The standardized pipeline needs:
+
+- `--split-dir`: a directory containing `train_manifest.json` and `test_manifest.json`.
+- Benign training input: either `--benign-train-dir` or `--benign-train-manifest`.
+- Benign testing input: either `--benign-test-dir` or `--benign-test-manifest`.
+- `--out-dir`: output directory for materialized data, features, model, predictions, and metrics.
+
+The malicious split directory should have this shape:
+
+```text
+example_split/
+  train_manifest.json
+  test_manifest.json
 ```
 
-## 4. Train the Model
+## Run Standard Evaluation
 
-```bash
-python ./code/training/train_classifier.py decision-tree ./features/true_value.csv ./features/train.csv -o model.pkl 
+PowerShell:
+
+```powershell
+uv run .\standard_pipeline.py `
+  --split-dir C:\path\to\split `
+  --benign-train-dir C:\path\to\benign\train `
+  --benign-test-dir C:\path\to\benign\test `
+  --out-dir .\results\standard_eval `
+  --classifier random-forest `
+  --materialize hardlink
 ```
 
-## 5. Make Predictions
-
-> Only uses the trained model for prediction (does not include clone-detector or reproducer).
+Git Bash / WSL-style shell:
 
 ```bash
-python predict.py model.pkl ./features/test.csv -o predictions.csv
+./run.sh standard-eval \
+  --split-dir /path/to/split \
+  --benign-train-dir /path/to/benign/train \
+  --benign-test-dir /path/to/benign/test \
+  --out-dir ./results/standard_eval \
+  --classifier random-forest \
+  --materialize hardlink
 ```
 
-## 6. Generate True Labels for Test Set
+Useful options:
 
-```bash
-python generate_malicious_csv.py ./test_dataset/dir -o ./features/test_true_value.csv
+- `--classifier`: `decision-tree`, `random-forest`, `naive-bayes`, or `svm`.
+- `--materialize`: `copy`, `hardlink`, or `symlink`. Use `hardlink` when train/test archives are on the same filesystem.
+- `--max-workers`: parallel archive feature extraction workers.
+- `--archive-timeout-seconds`: per-archive feature extraction timeout.
+- `--smote`: enable SMOTE oversampling.
+- `--booleanize`: convert feature values to binary indicators.
+
+## Outputs
+
+The output directory contains the materialized split data, extracted feature CSV files, model/prediction artifacts, and:
+
+```text
+metrics.json
 ```
 
-## 7. Evaluate Prediction Metrics
+`metrics.json` contains the binary classification metrics for the selected split.
 
-```bash
-python ./calc.py predictions.csv -m ./features/test_true_value.csv
+## Legacy Manual Workflow
+
+The older step-by-step workflow is still available when debugging Amalfi directly:
+
+```powershell
+uv run .\generate_malicious_csv.py C:\path\to\malicious -o .\features\true_value.csv
+uv run .\code\training\feature_extractor.py --dataset C:\path\to\dataset --out .\features\train.csv
+uv run .\code\training\train_classifier.py random-forest .\features\true_value.csv .\features\train.csv -o model.pkl
+uv run .\predict.py model.pkl .\features\test.csv -o predictions.csv
+uv run .\calc.py predictions.csv -m .\features\test_true_value.csv
 ```
 
+For controlled comparisons, prefer `standard_pipeline.py`; it keeps split handling and output metrics consistent across runs.
 
+## Common Issues
 
-# Artifact: Practical Automated Detection of Malicious npm Packages
-
-This is the artifact for our ICSE '22 paper "Practical Automated Detection of Malicious npm Packages", which presents an approach to automatically detecting malicious npm packages based on a combination of three components: machine-learning classifiers trained on known samples of malicious and benign npm packages; a reproducer for identifying packages that can be rebuilt from source and hence are unlikely to be malicious; and a clone detector for finding copies of known malicious packages.
-
-We would like to claim an Artifact Available badge, and hence make this data publicly available at https://github.com/githubnext/amalfi-artifact. No specific technology skills are required to use this data. There are no external dependencies, and no setup is required.
-
-The artifact contains the code for training the classifiers, reproducing packages from source and detecting clones; a description of the samples used for initial training; as well as input data and results for the two experiments reported in the paper: classifying and retraining on newly published packages over the course of one week (Section 4.1), and classifying manually labeled packages (Section 4.2). We further explain where to find this data in the repository below.
-
-The artifact does _not_ contain the feature-extraction code, the contents and features of the training samples, the trained classifiers, and the contents and features of the samples considered in our experiments. We further explain why these could not be included below.
-
-## What is included
-
-### Code for training classifiers
-
-This is implemented as a Python script [`code/trainining/train_classifier.py`](code/training/train_classifier.py). Invoking the script with the `--help` option prints out an explanation of the various supported command-line flags. Note that this code is for reference purposes only and cannot be used to replicate our results, since it needs as its input features for the samples comprising the training set, which are not included in the artifact as explained below.
-
-### Code for reproducing packages 
-
-The reproducer is implemented as a Shell script [`code/reproducer/reproduce-package.sh`](code/reproducer/reproduce-package.sh) that, given a package name and a version, uses an auxiliary script [`code/reproducer/build-package.sh`](code/reproducer/build-package.sh) to rebuild the package from source, and then compares the result to the published package.
-
-### Code for detecting clones
-
-The clone detector is implemented as a Python script [`code/clone-detector/hash_package.py`](code/clone-detector/hash_package.py) which computes an MD5 hash for a package. 
-
-### Description of basic corpus
-
-The CSV file [`data/basic-corpus.csv`](data/basic-corpus.csv) lists information about the samples constituting the basic corpus our classifiers were trained on (Section 3.3). For each sample, it contains the _package_ name and _version_ number of the npm package it corresponds to, the _hash_ of the sample (computed as described in Section 3.4), and an _analysis_ label indicating whether the sample is malicious or benign.
-
-### Input data for experiments
-
-The CSV files [`data/july-29.csv`](data/july-29.csv) to [`data/august-4.csv`](data/august-4.csv) list information about the samples considered in Experiment 1, corresponding to all new package versions published to the npm registry that day, excluding private packages. The format is the same as for the training set, but samples that were not manually reviewed are labeled as "not triaged".
-
-Taken together, these files total about 8MB of data.
-
-### Results of experiments
-
-The directory [`results/slide-window`](results/slide-window) contains the results of Experiment 1, again in a series of CSV files named [`july-29.csv`](results/slide-window/july-29.csv) to [`august-4.csv`](results/slide-window/august-4.csv). For each day, it lists each sample that was labeled as malicious by at least one classifier or the clone detector. For each sample, we again list _package_ name, _version_, and _hash_ as above; whether the sample was _reproducible_ from source by the reproducer; whether the sample was found to be malicious or not by manual _analysis_, and whether each of the classifiers (_decision-tree_, _naive-bayes_, _svm_, _hash_) labeled it as malicious.
-
-The directory [`results/cross-validation`](results/cross-validation) contains the result from the 10-fold cross-validation on our basic corpus data performed as part of Experiment 2, with one subdirectory per fold. For each fold, there are three TSV files, one per classifier, with three columns: package name, package version, and the label assigned by the classifier.
-
-Finally, the directory [`results/maloss`](results/maloss) contains the results from running our classifiers on the MalOSS dataset from Duan et al.'s paper "Towards Measuring Supply Chain Attacks on Package Managers for Interpreted Languages". As for the cross-validation experiment, there is one TSV file per classifier, with the same three columns as above.
-
-Taken together, these files total less than 1MB of data. 
-
-### Performance measurements 
-
-The directory [`results/timing`](results/timing) has logs of the time it took for the different stages of Experiment 1. The files [`results/timing/extract_features_time.csv`](results/timing/extract_features_time.csv) and [`results/timing/extract_diffs_time.csv`](results/timing/extract_diffs_time.csv) list the timings for extracting the features and the difference of features between versions, respectively, for ~500 random packages. The subdirectories each contain the times for training (directory _training_) amd prediction (directory _prediction_) for each classifier. 
-
-The files amount to about 6MB. 
-
-## What is not included
-
-## Contents of samples
-
-We were not able to include the contents of the samples in our basic corpus or the samples considered in Experiment 1, since some of them contain malicious and harmful code.
-
-## Features of samples
-
-We were not able to include the features extracted from the samples either. Our approach might be deployed in production at some future date, and we do not want to give a prospective attacker any support in reverse-engineering our technique so as to avoid detection.
-
-## Code for extracting features
-
-For the same reason, we were not able to include the feature-extraction code.
-
-## Trained classifiers
-
-Finally, the classifiers trained on the basic corpus and as part of Experiment 1 can, unfortunately, also not be made public, again due to concerns about abuse by malicious parties.
+- If Graphviz-related imports fail, rerun `uv sync`; the reproduction uses the dependencies listed in `pyproject.toml`.
+- If archive extraction stalls, lower `--max-workers` and increase `--archive-timeout-seconds`.
+- If hardlink materialization fails across drives, switch to `--materialize copy`.

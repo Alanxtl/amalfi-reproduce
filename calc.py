@@ -65,7 +65,6 @@ def calculate_metrics(
 
             true_labels.append(label)
 
-
     df = pd.read_csv(file_path)
     predicted_labels = df[pred_col].astype(str)
 
@@ -76,10 +75,25 @@ def calculate_metrics(
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Compute metrics using label truth from a headerless malicious CSV.")
-    ap.add_argument("features_csv", help="Path to features/prediction CSV (must include prediction column).")
-    ap.add_argument("-m", "--malicious-csv", required=True, help="Headerless CSV with either 'pkg,ver' or 'hash' per line.")
-    ap.add_argument("--hashing", action="store_true", help="If set, malicious-csv contains one hash per line and features_csv must have 'hash' column.")
+
+    ap = argparse.ArgumentParser(
+        description="Compute metrics using label truth from a headerless malicious CSV."
+    )
+    ap.add_argument(
+        "features_csv",
+        help="Path to features/prediction CSV (must include prediction column).",
+    )
+    ap.add_argument(
+        "-m",
+        "--malicious-csv",
+        required=True,
+        help="Headerless CSV with either 'pkg,ver' or 'hash' per line.",
+    )
+    ap.add_argument(
+        "--hashing",
+        action="store_true",
+        help="If set, malicious-csv contains one hash per line and features_csv must have 'hash' column.",
+    )
     ap.add_argument("--pkg-col", default="package_name")
     ap.add_argument("--ver-col", default="package_version")
     ap.add_argument("--pred-col", default="prediction")

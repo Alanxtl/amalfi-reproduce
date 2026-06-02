@@ -21,4 +21,8 @@ def version_date(versions, feature_dir):
                 version_dates[version] = date
         versions[package_dir] = version_dates
 
-    return versions[package_dir][version_dir] if version_dir in versions[package_dir] else None
+    return (
+        versions[package_dir][version_dir]
+        if version_dir in versions[package_dir]
+        else None
+    )

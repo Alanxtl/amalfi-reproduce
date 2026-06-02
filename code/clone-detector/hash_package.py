@@ -31,6 +31,9 @@ def hash_package(root):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <package directory>", file=sys.stderr)
-        print(f"  Prints an md5 hash of all files in the given package directory, ignoring package name and version.", file=sys.stderr)
+        print(
+            f"  Prints an md5 hash of all files in the given package directory, ignoring package name and version.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     print(hash_package(sys.argv[1]))

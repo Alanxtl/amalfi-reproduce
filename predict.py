@@ -11,7 +11,12 @@ def predict_from_bigcsv(model_path, features_csv, output_csv):
         model_data = pickle.load(f)
 
     clf = model_data["classifier"]
-    feature_names = model_data["feature_names"]
+    vec = model_data.get("vectorizer")
+    if vec is None:
+        raise KeyError(
+            "model.pkl is missing 'vectorizer'; please retrain with the current trainer."
+        )
+    feature_names = list(vec.get_feature_names_out())
     booleanize = model_data.get("booleanize", False)
     positive = model_data.get("positive", False)
 
@@ -50,27 +55,37 @@ def predict_from_bigcsv(model_path, features_csv, output_csv):
             else:
                 pred = "benign"  # fallback
 
-            results.append({
-                "tarball": row["tarball"],
-                "package_name": row["package_name"],
-                "package_version": row["package_version"],
-                "prediction": pred
-            })
+            results.append(
+                {
+                    "tarball": row["tarball"],
+                    "package_name": row["package_name"],
+                    "package_version": row["package_version"],
+                    "prediction": pred,
+                }
+            )
 
     # Write prediction results
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["tarball", "package_name", "package_version", "prediction"])
+        writer = csv.DictWriter(
+            f, fieldnames=["tarball", "package_name", "package_version", "prediction"]
+        )
         writer.writeheader()
         writer.writerows(results)
 
-    print(f"✅ Predictions saved to {output_csv}")
+    print(f"Predictions saved to {output_csv}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Predict malicious/benign from features CSV")
+    parser = argparse.ArgumentParser(
+        description="Predict malicious/benign from features CSV"
+    )
     parser.add_argument("model", help="Pickled model file (from training)")
-    parser.add_argument("features_csv", help="CSV file with extracted features (all-features.csv)")
-    parser.add_argument("-o", "--output", required=True, help="CSV file to save predictions")
+    parser.add_argument(
+        "features_csv", help="CSV file with extracted features (all-features.csv)"
+    )
+    parser.add_argument(
+        "-o", "--output", required=True, help="CSV file to save predictions"
+    )
     args = parser.parse_args()
 
     predict_from_bigcsv(args.model, args.features_csv, args.output)
